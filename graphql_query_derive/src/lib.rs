@@ -66,6 +66,26 @@ fn read_file(
     Ok(out)
 }
 
+fn implicitly_discover_query_name(struct_name: &str) -> Result<String, failure::Error> {
+    let mut out = "src/".to_owned();
+    out.push_str(&struct_name.to_string().to_snake_case());
+    out.push_str(".graphql");
+    Ok(out)
+}
+
+fn implicitly_discover_schema_name(cargo_manifest_dir: &str) -> Result<String, failure::Error> {
+    if ::std::path::Path::new(&cargo_manifest_dir).join("src/schema.json").exists() {
+        return Ok("src/schema.json".to_owned());
+    }
+    if ::std::path::Path::new(&cargo_manifest_dir).join("src/schema.graphql").exists() {
+        return Ok("src/schema.graphql".to_owned());
+    }
+    if ::std::path::Path::new(&cargo_manifest_dir).join("src/schema.gql").exists() {
+        return Ok("src/schema.gql".to_owned());
+    }
+    Err(format_err!("None of the following exist in src/: schema.json, schema.graphql, schema.gql"))
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub(crate) struct FullResponse<T> {
     data: T,
@@ -75,8 +95,14 @@ fn impl_gql_query(input: &syn::DeriveInput) -> Result<TokenStream, failure::Erro
     let cargo_manifest_dir =
         ::std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR env variable is defined");
 
-    let query_path = extract_attr(input, "query_path")?;
-    let schema_path = extract_attr(input, "schema_path")?;
+    let module_name = Ident::new(&input.ident.to_string().to_snake_case(), Span::call_site());
+    let struct_name = &input.ident;
+
+    let query_path = extract_attr(input, "query_path")
+        .or_else(|_err| implicitly_discover_query_name(&struct_name.to_string()))?;
+
+    let schema_path = extract_attr(input, "schema_path")
+        .or_else(|_err| implicitly_discover_schema_name(&cargo_manifest_dir))?;
 
     // We need to qualify the query with the path to the crate it is part of
     let query_path = format!("{}/{}", cargo_manifest_dir, query_path);
@@ -104,8 +130,6 @@ fn impl_gql_query(input: &syn::DeriveInput) -> Result<TokenStream, failure::Erro
         extension => panic!("Unsupported extension for the GraphQL schema: {} (only .json and .graphql are supported)", extension)
     };
 
-    let module_name = Ident::new(&input.ident.to_string().to_snake_case(), Span::call_site());
-    let struct_name = &input.ident;
     let schema_output = schema.response_for_query(query)?;
 
     let result = quote!(
